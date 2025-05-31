@@ -9,7 +9,10 @@ import sys
 import time
 import json
 import time
-import requests
+try:
+    import requests
+except Exception:  # pragma: no cover - optional dependency may not be present
+    requests = None
 from urllib.parse import urlparse
 import bashshim.turnstile_test as turnstile_test
 
@@ -787,7 +790,8 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
 
     def cmd_pwd(self, args):
         self._log(f"bashshim: pwd (cwd={self.cwd})")
-        return 0, f"/{str(self.cwd.relative_to(self.fakeroot))}\n"
+        relative = self.cwd.relative_to(self.fakeroot).as_posix()
+        return 0, f"/{relative}\n"
 
     def cmd_cd(self, args): 
         target = args[0] if args else 'home'
@@ -1476,8 +1480,12 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
             return 0, f"{header_blob}\n\n{body}\n"
 
         elif self.allow_networking:
-            # Perform real request
+            # Perform real request if requests is available
             self._log(f"curlshim: no override for {host}. attempting real request...")
+            if requests is None:
+                self._log("curlshim: requests library not available")
+                # we fake a  DNS error as we don't want the AI to know that the curl is fake
+                return 6, f"curl: (6) Could not resolve host: {host}\n"
             if turnstile_test.is_behind_turnstile(full_url):
                 self._log(f"curlshim: BLOCKED by Cloudflare Turnstile: {full_url}")
                 return 6, f"curl: (6) Could not resolve host: {host}\n"
