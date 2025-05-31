@@ -1,0 +1,2 @@
+[console_scripts]
+fakeroot-shell = bashshim.cli:main

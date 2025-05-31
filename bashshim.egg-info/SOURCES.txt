@@ -1,0 +1,12 @@
+pyproject.toml
+setup.cfg
+setup.py
+bashshim/__init__.py
+bashshim/cli.py
+bashshim/shell.py
+bashshim/turnstile.py
+bashshim.egg-info/PKG-INFO
+bashshim.egg-info/SOURCES.txt
+bashshim.egg-info/dependency_links.txt
+bashshim.egg-info/entry_points.txt
+bashshim.egg-info/top_level.txt
