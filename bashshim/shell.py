@@ -790,7 +790,8 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
 
     def cmd_pwd(self, args):
         self._log(f"bashshim: pwd (cwd={self.cwd})")
-        return 0, f"/{str(self.cwd.relative_to(self.fakeroot))}\n"
+        relative = self.cwd.relative_to(self.fakeroot).as_posix()
+        return 0, f"/{relative}\n"
 
     def cmd_cd(self, args): 
         target = args[0] if args else 'home'
