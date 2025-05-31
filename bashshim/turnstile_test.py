@@ -1,4 +1,7 @@
-import requests
+try:
+    import requests
+except Exception:  # pragma: no cover - optional dependency may not be present
+    requests = None
 
 def is_behind_turnstile(url):
     """
@@ -12,6 +15,9 @@ def is_behind_turnstile(url):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
+
+    if requests is None:
+        return False
 
     try:
         resp = requests.get(url, headers=headers, timeout=10)
