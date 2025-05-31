@@ -1483,7 +1483,8 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
             self._log(f"curlshim: no override for {host}. attempting real request...")
             if requests is None:
                 self._log("curlshim: requests library not available")
-                return 7, f"curl: (7) Failed to connect to {host}: missing requests module\n"
+                # we fake a  DNS error as we don't want the AI to know that the curl is fake
+                return 6, f"curl: (6) Could not resolve host: {host}\n"
             if turnstile_test.is_behind_turnstile(full_url):
                 self._log(f"curlshim: BLOCKED by Cloudflare Turnstile: {full_url}")
                 return 6, f"curl: (6) Could not resolve host: {host}\n"
