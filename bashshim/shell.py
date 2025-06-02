@@ -38,6 +38,11 @@ class BashShim:
         self.home = Path.home()
         self.fakeroot = self.home / 'fakeroot'
         self.cwd = self.fakeroot
+
+        # Shell variable support
+        self.variables = {}
+        self._init_shell_vars()
+
         self._log(f"bashshim: initializing BashShim for user '{username}' on simulated OS '{self.sim_os}' (host: {self.hostname})")
         self.simulated = {
             'echo': self.cmd_echo,
@@ -585,8 +590,58 @@ class BashShim:
                 self.proc_users = {}
             self.proc_users[pid] = user
 
+    def _init_shell_vars(self):
+        # Populate common bash shell variables
+        self.variables = {
+            'HOME': str(self.fakeroot / ('Users' if self.sim_os == 'Darwin' else 'home') / self.username),
+            'USER': self.username,
+            'LOGNAME': self.username,
+            'PWD': f"/{self.cwd.relative_to(self.fakeroot).as_posix()}",
+            'OLDPWD': str(self.cwd),
+            'UID': str(self.uid),
+            'SHELL': '/bin/bash',
+            'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+            'HOSTNAME': self.hostname,
+            'OSTYPE': self.sim_os.lower(),
+            'SHLVL': '1',
+            'TERM': 'xterm-256color',
+            'LANG': 'en_US.UTF-8',
+            'PS1': '\\u@\\h:\\w\\$ ',
+            '?': '0',
+            '$': str(os.getpid()),
+            '_': '',
+        }
+
+    def _expand_vars(self, s):
+        import re
+        def repl(m):
+            var = m.group(1) or m.group(2)
+            return self.variables.get(var, os.environ.get(var, ''))
+        # $VAR or ${VAR}
+        return re.sub(r'\$(\w+)|\$\{([^}]+)\}', repl, s)
+
+    def _expand_args(self, args):
+        return [self._expand_vars(arg) for arg in args]
+
     def run(self, command_line):
         self._log(f"bashshim: running command: {command_line}")
+
+        # Variable assignment support (e.g., FOO=bar)
+        stripped = command_line.strip()
+        if '=' in stripped and not stripped.startswith(('>', '<', '|')):
+            parts = stripped.split()
+            assigned = False
+            for part in parts:
+                if '=' in part and not part.startswith(('>', '<', '|')):
+                    var, val = part.split('=', 1)
+                    if var.isidentifier():
+                        self.variables[var] = self._expand_vars(val)
+                        assigned = True
+            # If only assignments, no command, return success
+            if assigned and (len(parts) == 1 or all('=' in p for p in parts)):
+                return 0, ''
+            # Remove assignments from command_line for further processing
+            command_line = ' '.join([p for p in parts if '=' not in p])
 
         # Handle sudo prefix
         if command_line.startswith("sudo "):
@@ -599,6 +654,7 @@ class BashShim:
             # Returns (cmd, out_file, append)
             import shlex
             tokens = shlex.split(cmd)
+            tokens = self._expand_args(tokens)
             if '>>' in tokens:
                 idx = tokens.index('>>')
                 return tokens[:idx], tokens[idx+1], True
@@ -687,16 +743,21 @@ class BashShim:
                 return 0, ''
             cmd = tokens[0]
             args = tokens[1:]
+            # Expand variables in args
+            args = self._expand_args(args)
             if cmd in self.simulated:
                 try:
                     code, out = self.simulated[cmd](args)
+                    self.variables['?'] = str(code)
                     self._log(f"bashshim: simulated '{cmd}' exit {code}")
                 except Exception as e:
+                    self.variables['?'] = '1'
                     self._log(f"bashshim: error simulating '{cmd}': {e}")
                     return 1, f"bashshim: error simulating '{cmd}': {e}"
             else:
                 self._log(f"bashshim: '{cmd}' not simulated, using fallback")
                 code, out = self.fallback_exec(' '.join(tokens))
+                self.variables['?'] = str(code)
             if out_file:
                 mode = 'a' if append else 'w'
                 real_path = self._to_real_path(out_file)
@@ -747,17 +808,23 @@ class BashShim:
             return 0, ''
         cmd = tokens[0]
         args = tokens[1:]
+        # Expand variables in args
+        args = self._expand_args(args)
         if cmd in self.simulated:
             try:
                 code, out = self.simulated[cmd](args)
+                self.variables['?'] = str(code)
                 self._log(f"bashshim: simulated '{cmd}' exit {code}")
                 return code, out
             except Exception as e:
+                self.variables['?'] = '1'
                 self._log(f"bashshim: error simulating '{cmd}': {e}")
                 return 1, f"bashshim: error simulating '{cmd}': {e}"
         else:
             self._log(f"bashshim: '{cmd}' not simulated, using fallback")
-            return self.fallback_exec(command_line)
+            code, out = self.fallback_exec(command_line)
+            self.variables['?'] = str(code)
+            return code, out
 
     def cmd_pkg_manager(self, args):
         self._log(f"bashshim: {self.package_manager} called with args: {args}")
