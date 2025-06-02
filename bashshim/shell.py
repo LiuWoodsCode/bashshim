@@ -1524,7 +1524,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         self._log(f"bashshim: fallback_exec: {command_line}")
         if self.fallback == 'error':
             self._log(f"bashshim: fallback_exec: command not found: {command_line.split()[0]}")
-            return 127, f"bashshim: {command_line.split()[0]}: command not found\n"
+            return 127, f"{command_line.split()[0]}: command not found\n"
         if self.fallback == 'segfault':
             self._log(f"bashshim: fallback_exec: faking segmentation fault")
             return 139, f"Segmentation fault (core dumped)\n"
