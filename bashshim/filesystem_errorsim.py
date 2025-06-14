@@ -8,11 +8,10 @@ class FileSystem:
     def __init__(self, root: Path):
         self.root = Path(root)
 
-    def _maybe_fail(self, fail_rate=0.001, ignore_rate=0.05, latency=0.2):
+    def _maybe_fail(self, fail_rate=0.1, ignore_rate=0, latency=0.2):
         # Randomly raise an exception
         if random.random() < fail_rate:
-            pass
-            # raise OSError("Random filesystem failure occurred.")
+            raise OSError("Random filesystem failure occurred.")
         # Randomly silently ignore
         if random.random() < ignore_rate:
             print("Randomly ignoring operation.")
