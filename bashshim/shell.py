@@ -97,7 +97,7 @@ class BashShim:
         if self.log_dmesg:
             print(f"[dmesg] {now} {msg}", file=sys.stderr)
         try:
-            self.fs.write_text(self.fakeroot / 'bashshim.log', log_entry + "\n")
+            self.fs.append_text(self.fakeroot / 'bashshim.log', log_entry + "\n")
         except Exception as e:
             pass # Probably an attempt to log before we have that file, ignore it as the buffer logs it anyway
 

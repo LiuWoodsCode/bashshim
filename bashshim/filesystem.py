@@ -41,3 +41,10 @@ class FileSystem:
 
     def is_dir(self, path):
         return Path(path).is_dir()
+
+    def append_text(self, path, data):
+        """Append text to a file using read_text and write_text."""
+        current = ""
+        if self.exists(path):
+            current = self.read_text(path)
+        self.write_text(path, current + data)

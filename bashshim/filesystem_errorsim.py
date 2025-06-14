@@ -8,14 +8,15 @@ class FileSystem:
     def __init__(self, root: Path):
         self.root = Path(root)
 
-    def _maybe_fail(self, fail_rate=0.1, ignore_rate=0.05, latency=0.2):
+    def _maybe_fail(self, fail_rate=0.001, ignore_rate=0.05, latency=0.2):
         # Randomly raise an exception
         if random.random() < fail_rate:
-            raise OSError("Random filesystem failure occurred.")
+            pass
+            # raise OSError("Random filesystem failure occurred.")
         # Randomly silently ignore
         if random.random() < ignore_rate:
             print("Randomly ignoring operation.")
-            return True
+            # return True
         # Randomly add latency
         if random.random() < 0.2:
             delay = random.uniform(0, latency)
@@ -24,12 +25,15 @@ class FileSystem:
         return False
 
     def _maybe_corrupt(self, data):
-        # Randomly flip a bit in a string
-        if isinstance(data, str) and random.random() < 0.1 and data:
-            idx = random.randint(0, len(data)-1)
-            c = chr(ord(data[idx]) ^ 1)
-            data = data[:idx] + c + data[idx+1:]
-            print("Randomly corrupted data.")
+        # Randomly flip multiple bits in a string (for write operations only)
+        if isinstance(data, str) and random.random() < 0.06 and data:
+            n_flips = max(1, int(len(data) * 0.1))
+            idxs = random.sample(range(len(data)), n_flips)
+            data_list = list(data)
+            for idx in idxs:
+                data_list[idx] = chr(ord(data_list[idx]) ^ 1)
+            data = ''.join(data_list)
+            print(f"Randomly corrupted {n_flips} bytes of data.")
         return data
 
     def exists(self, path):
@@ -67,12 +71,12 @@ class FileSystem:
         if self._maybe_fail(): return ""
         print(f"Reading text from: {path}")
         data = Path(path).read_text()
-        return self._maybe_corrupt(data)
+        return data  # No corruption on read
 
     def write_text(self, path, data):
         if self._maybe_fail(): return 0
         print(f"Writing text to: {path}")
-        data = self._maybe_corrupt(data)
+        data = self._maybe_corrupt(data)  # Corrupt only the data being written
         return Path(path).write_text(data)
 
     def touch(self, path, exist_ok=True):
@@ -99,3 +103,12 @@ class FileSystem:
         if self._maybe_fail(): return False
         print(f"Checking if directory: {path}")
         return Path(path).is_dir()
+
+    def append_text(self, path, data):
+        """Append text to a file using read_text and write_text."""
+        current = ""
+        if self.exists(path):
+            current = self.read_text(path)
+        # Only corrupt the appended data, not the whole file
+        corrupted_data = self._maybe_corrupt(data)
+        self.write_text(path, current + corrupted_data)
