@@ -2,6 +2,22 @@ from .shell import BashShim
 import argparse
 import sys
 def main():
+    # Stage 1: Temporary parser for --os-flavor
+    temp_parser = argparse.ArgumentParser(add_help=False)
+    temp_parser.add_argument('--os-flavor', default='Linux')
+    temp_args, _ = temp_parser.parse_known_args()
+    os_flavor = temp_args.os_flavor
+
+    if os_flavor.lower() == 'linux':
+        kernel_default = '6.0'
+    elif os_flavor.lower() == 'darwin':
+        kernel_default = '23.0.0'
+    elif os_flavor.lower() == 'bsd':
+        kernel_default = '14.0'
+    else:
+        kernel_default = '6.0'
+
+    # Stage 2: Full parser
     parser = argparse.ArgumentParser(description="Fake Bash shell simulator")
     parser.add_argument('--fallback', default='error', help='Fallback mode for unknown commands (default: error)')
     parser.add_argument('--os-flavor', default='Linux', help='Simulated OS flavor (Linux, Darwin, BSD)')
@@ -11,17 +27,6 @@ def main():
     parser.add_argument('--distro-codename', default='marie', help='Distribution codename')
     parser.add_argument('--distro-id', default='fakeos', help='Distribution ID')
     parser.add_argument('--distro-version', default='1.0', help='Distribution version')
-    # Parse known args to get os_flavor before setting kernel-version default
-    partial_args, _ = parser.parse_known_args()
-    os_flavor = partial_args.os_flavor
-    if os_flavor.lower() == 'linux':
-        kernel_default = '6.0'
-    elif os_flavor.lower() == 'darwin':
-        kernel_default = '23.0.0'
-    elif os_flavor.lower() == 'bsd':
-        kernel_default = '14.0'
-    else:
-        kernel_default = '6.0'
     parser.add_argument('--kernel-version', default=kernel_default, help='Kernel version')
     parser.add_argument('--package-manager', default='apt', help='Package manager name')
     parser.add_argument('--package-manager-mirror', default='http://package.fakeos.org', help='Package manager mirror URL')
