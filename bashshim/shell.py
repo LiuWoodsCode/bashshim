@@ -77,6 +77,8 @@ class BashShim:
             'free': self.cmd_free,
             'curl': self.cmd_curl,
             'rebuildfs': self.cmd_rebuildfs,
+            'type': self.cmd_type,  # <-- Add type command
+            'bc': self.cmd_bc,      # <-- Add bc command
         }
         
         self._init_fakeroot()
@@ -1291,6 +1293,61 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         self._log(f"bashshim: rmdir {args} -> code {code}")
         return code, out
 
+    def cmd_bc(self, args):
+        """
+        Simulate the 'bc' command for basic arithmetic.
+        Supports: echo "1+2" | bc, bc <<< "1+2", or bc with stdin.
+        """
+        import re
+
+        # If args contains '<<<', treat as here-string
+        expr = None
+        if args and args[0] == '<<<' and len(args) > 1:
+            expr = args[1]
+        elif args:
+            # If bc is called with arguments, join as expression
+            expr = ' '.join(args)
+        else:
+            # Read from stdin until EOF
+            self._log("bashshim: bc waiting for input (Ctrl-D to end)")
+            try:
+                expr = ""
+                while True:
+                    line = input()
+                    expr += line + "\n"
+            except EOFError:
+                pass
+
+        # Only allow safe arithmetic expressions: numbers, +, -, *, /, %, (, ), ., whitespace
+        if expr is None:
+            return 1, ""
+        expr = expr.strip()
+        if not expr:
+            return 0, ""
+        # Remove comments and extra whitespace
+        expr = re.sub(r'#.*', '', expr)
+        expr = expr.replace('\n', ';')
+        # Only allow safe characters
+        if not re.match(r'^[\d\s\+\-\*\/\%\(\)\.;\.]+$', expr):
+            return 1, "bc: invalid expression\n"
+        try:
+            # Evaluate each statement separated by ';'
+            results = []
+            for statement in expr.split(';'):
+                statement = statement.strip()
+                if not statement:
+                    continue
+                # Evaluate using Python's eval, restrict builtins
+                val = eval(statement, {"__builtins__": None}, {})
+                # bc outputs floats with no trailing .0 if integer
+                if isinstance(val, float) and val.is_integer():
+                    val = int(val)
+                results.append(str(val))
+            out = '\n'.join(results) + '\n' if results else ''
+            return 0, out
+        except Exception as e:
+            return 1, f"bc: error: {e}\n"
+
     def cmd_head(self, args):
         lines = 10
         files = []
@@ -1668,3 +1725,87 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
             except Exception as e:
                 self._log(f"bashshim: subprocess fallback_exec error: {e}")
                 return 139, f"Segmentation fault (core dumped)\n"
+
+    def cmd_type(self, args):
+        """
+        Simulate the 'type' command with support for common flags.
+        """
+        # Supported flags: -a, -t, -p, -P, -f, -h
+        show_all = False
+        show_type = False
+        show_path = False
+        show_path_capital = False
+        force_func = False
+        help_flag = False
+        names = []
+        invalid_flag = None
+
+        for arg in args:
+            if arg == "-a":
+                show_all = True
+            elif arg == "-t":
+                show_type = True
+            elif arg == "-p":
+                show_path = True
+            elif arg == "-P":
+                show_path_capital = True
+            elif arg == "-f":
+                force_func = True
+            elif arg in ("-h", "--help"):
+                help_flag = True
+            elif arg.startswith("-"):
+                invalid_flag = arg
+                break
+            else:
+                names.append(arg)
+
+        if help_flag:
+            out = (
+                "type: type [-afptP] name [name ...]\n"
+                "    Display information about command type.\n"
+                "    -a    display all locations containing an executable named 'name'\n"
+                "    -f    suppress shell function lookup\n"
+                "    -P    force a PATH search for each name, even if it is an alias, builtin, or function\n"
+                "    -p    return the name of the disk file that would be executed\n"
+                "    -t    print a string which is one of 'alias', 'keyword', 'function', 'builtin', 'file' or 'not found'\n"
+                "    -h    display this help and exit\n"
+            )
+            return 0, out
+
+        if invalid_flag:
+            out = f"type: invalid option -- '{invalid_flag.lstrip('-')}'\nTry 'type --help' for more information.\n"
+            self._log(f"bashshim: type error -> {out.strip()}")
+            return 1, out
+
+        if not names:
+            return 1, "type: not enough arguments\n"
+
+        out = ""
+        code = 0
+        for name in names:
+            # Simulate builtins (hardcoded for now)
+            builtins = {
+                "cd", "echo", "pwd", "exit", "type", "true", "false", "read", "test", "alias", "unalias", "set", "unset", "export", "help"
+            }
+            if name in builtins:
+                if show_type:
+                    out += "builtin\n"
+                else:
+                    out += f"{name} is a shell builtin\n"
+                continue
+            # Simulated commands
+            if name in self.simulated:
+                if show_type:
+                    out += "file\n"
+                elif show_path or show_path_capital:
+                    out += f"{self.fakeroot / 'bin' / name}\n"
+                else:
+                    out += f"{name} is {self.fakeroot / 'bin' / name}\n"
+                continue
+            # Not found
+            if show_type:
+                out += "not found\n"
+            else:
+                out += f"type: {name} not found\n"
+                code = 1
+        return code, out
