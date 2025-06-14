@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover - optional dependency may not be present
     requests = None
 from urllib.parse import urlparse
 import bashshim.turnstile_test as turnstile_test
+from bashshim.filesystem import FileSystem
 
 class BashShim:
     def __init__(self, fallback='error', os_flavor="Linux", kernel_version="5.15.0-fake", username="aurahack", uid=1337, distro_name="FakeOS", distro_codename="marie", distro_id="fakeos", distro_version="1.0", package_manager="apt", package_manager_mirror="http://package.fakeos.org", log_dmesg=True, allow_networking=True):
@@ -37,6 +38,7 @@ class BashShim:
 
         self.home = Path.home()
         self.fakeroot = self.home / 'fakeroot'
+        self.fs = FileSystem(self.fakeroot)
         self.cwd = self.fakeroot
 
         # Shell variable support
@@ -95,18 +97,16 @@ class BashShim:
         if self.log_dmesg:
             print(f"[dmesg] {now} {msg}", file=sys.stderr)
         try:
-            with open(self.fakeroot / 'bashshim.log', 'a') as log_file:
-                log_file.write(log_entry + "\n")
+            self.fs.write_text(self.fakeroot / 'bashshim.log', log_entry + "\n")
         except Exception as e:
             pass # Probably an attempt to log before we have that file, ignore it as the buffer logs it anyway
 
     def _init_fakeroot(self):
         self._log(f"bashshim: checking fakeroot at {self.fakeroot}")
-        if not self.fakeroot.exists():
-            self.fakeroot.mkdir()
+        if not self.fs.exists(self.fakeroot):
+            self.fs.mkdir(self.fakeroot)
             self._log(f"bashshim: created fakeroot directory at {self.fakeroot}")
-        # Ignore bashshim.log when checking if fakeroot is empty
-        entries = [p for p in self.fakeroot.iterdir() if p.name != "bashshim.log"]
+        entries = [p for p in (Path(self.fakeroot)).iterdir() if p.name != "bashshim.log"]
         if not entries:
             self._log("bashshim: fakeroot is empty, populating structure")
             self._populate_structure()
@@ -349,7 +349,7 @@ class BashShim:
         for path, content in os_data.items():
             time.sleep(0.1)  # Simulate some delay for realism
             full_path = self.fakeroot / path
-            full_path.mkdir(parents=True, exist_ok=True)
+            self.fs.mkdir(full_path, parents=True, exist_ok=True)
 
             if isinstance(content, list):
                 for fname in content:
@@ -377,28 +377,23 @@ class BashShim:
                     ]
                     quote = random.choice(lena_quotes)
                     fpath = full_path / fname
-                    fpath.write_text(f"# I <3 Lena Raine\n" if '.' not in fname else "")
+                    self.fs.write_text(fpath, f"# I <3 Lena Raine\n" if '.' not in fname else "")
                     self._log(f"bashshim: created {fpath}")
             elif isinstance(content, dict):
                 for fname, fcontent in content.items():
                     fpath = full_path / fname
                     if isinstance(fcontent, str):
-                        fpath.write_text(fcontent)
+                        self.fs.write_text(fpath, fcontent)
                         self._log(f"bashshim: created and populated {fpath}")
                     elif isinstance(fcontent, list):
-                        # Create empty files for each item in the list
                         for subfname in fcontent:
                             subfpath = fpath / subfname if not (full_path / fname).is_file() else full_path / subfname
-                            subfpath.parent.mkdir(parents=True, exist_ok=True)
-                            subfpath.write_text("")
+                            self.fs.mkdir(subfpath.parent, parents=True, exist_ok=True)
+                            self.fs.write_text(subfpath, "")
                             self._log(f"bashshim: created {subfpath}")
-                    else:
-                        # If it's not a str or list, skip or handle as needed
-                        pass
-
         # Create /dev with fake devices
         dev_dir = self.fakeroot / 'dev'
-        dev_dir.mkdir(parents=True, exist_ok=True)
+        self.fs.mkdir(dev_dir, parents=True, exist_ok=True)
         fake_devs = {
             'null': '',
             'zero': '\x00' * 268435456,
@@ -409,16 +404,16 @@ class BashShim:
         for dev_name, content in fake_devs.items():
             dev_path = dev_dir / dev_name
             if isinstance(content, bytes):
-                dev_path.write_bytes(content)
+                with self.fs.open(dev_path, 'wb') as f:
+                    f.write(content)
             else:
-                dev_path.write_text(content)
+                self.fs.write_text(dev_path, content)
             self._log(f"bashshim: created /dev/{dev_name}")
-
         bin_dir = self.fakeroot / 'bin'
-        bin_dir.mkdir(parents=True, exist_ok=True)
+        self.fs.mkdir(bin_dir, parents=True, exist_ok=True)
         for cmd_name in self.simulated:
             cmd_path = bin_dir / cmd_name
-            if not cmd_path.exists():
+            if not self.fs.exists(cmd_path):
                 
                 lena_quotes = [
                     "# Lena Raine's music doesn't just soundtrack games—it soundtracks healing.",
@@ -443,10 +438,8 @@ class BashShim:
                     "# Lena writes like someone who's lived the weight of invisibility—and composed her way out."
                 ]
                 quote = random.choice(lena_quotes)
-                cmd_path.write_text(f"# I <3 Lena Raine\n{quote}\n")
-
+                self.fs.write_text(cmd_path, f"# I <3 Lena Raine\n{quote}\n")
         self._log(f"bashshim: created command stub {cmd_path}")
-        # Shell configs
         home_dir = self.fakeroot / ('Users' if self.sim_os == 'Darwin' else 'home') / self.username
         # Path to home dir (which might've been accidentally created as a file)
         home_dir = self.fakeroot / ('Users' if self.sim_os == 'Darwin' else 'home') / self.username
@@ -454,93 +447,30 @@ class BashShim:
         # Check for bad file that blocks folder creation
         if home_dir.exists() and not home_dir.is_dir():
             self._log(f"bashshim: WARNING — {home_dir} exists as a file, removing it to create dir.")
-            home_dir.unlink()
+            self.fs.remove(home_dir)
 
-        home_dir.mkdir(parents=True, exist_ok=True)
-        (home_dir / '.bashrc').write_text("# Simulated bashrc\nalias ll='ls -l'\n")
-        (home_dir / '.profile').write_text("# Simulated profile\nexport PATH=$PATH:/usr/local/bin\n")
+        self.fs.mkdir(home_dir, parents=True, exist_ok=True)
+        self.fs.write_text(home_dir / '.bashrc', "# Simulated bashrc\nalias ll='ls -l'\n")
+        self.fs.write_text(home_dir / '.profile', "# Simulated profile\nexport PATH=$PATH:/usr/local/bin\n")
 
         # macOS .app simulation
         if self.sim_os == 'Darwin':
             apps_dir = self.fakeroot / 'Applications'
             for app in os_data.get('Applications', []):
                 app_path = apps_dir / app
-                (app_path / 'Contents/MacOS').mkdir(parents=True, exist_ok=True)
-                (app_path / 'Contents/Info.plist').write_text(
+                self.fs.mkdir(app_path / 'Contents' / 'MacOS', parents=True, exist_ok=True)
+                self.fs.write_text(
+                    app_path / 'Contents' / 'Info.plist',
                     f"<?xml version='1.0'?><plist><dict><key>CFBundleName</key><string>{app}</string></dict></plist>"
                 )
                 self._log(f"bashshim: created simulated macOS app bundle {app_path}")
 
         self._log("bashshim: filesystem population complete.")
 
-    def _populate_structure_old(self):
-        structure = {
-            'Linux': {
-                'bin': ['ls', 'cat', 'touch', 'ps', 'dmesg', 'sh'],
-                'sbin': ['init', 'reboot'],
-                'etc': ['passwd', 'hosts'],
-                'usr/bin': ['nano', 'python3', 'vim'],
-                'usr/sbin': ['sshd'],
-                'home': [self.username],
-                'proc': [],
-                'var/log': ['syslog'],
-            },
-            'Darwin': {
-                'bin': ['ls', 'cat', 'touch', 'ps'],
-                'sbin': ['reboot'],
-                'etc': ['hosts'],
-                'usr/bin': ['zsh', 'open'],
-                'usr/sbin': ['sshd'],
-                'System': [],
-                'Applications': [],
-                'Users': [self.username],
-            },
-            'BSD': {
-                'bin': ['ls', 'cat', 'touch', 'ps', 'sh'],
-                'sbin': ['init', 'reboot'],
-                'etc': ['passwd', 'hosts'],
-                'usr/bin': ['csh', 'less'],
-                'usr/sbin': ['sshd'],
-                'home': [self.username],
-                'var': [],
-            }
-        }
-
-        self._log(f"bashshim: populating simulated filesystem for {self.sim_os}")
-        dirs = structure.get(self.sim_os, {})
-
-        for path, files in dirs.items():
-            dir_path = self.fakeroot / path
-            dir_path.mkdir(parents=True, exist_ok=True)
-            for fname in files:
-                file_path = dir_path / fname
-                file_path.touch()
-                file_path.write_text(f"# simulated {fname} binary\n")
-                self._log(f"bashshim: created {file_path}")
-
-        # Add /etc/os-release
-        etc = self.fakeroot / "etc"
-        etc.mkdir(exist_ok=True)
-        (etc / "os-release").write_text(
-            f'NAME="{self.distro_name}"\n'
-            f'ID={self.distro_id}\n'
-            f'VERSION="{self.distro_version}"\n'
-            f'PRETTY_NAME="{self.distro_name} {self.distro_version}"\n'
-        )
-        self._log(f"bashshim: created {etc / 'os-release'}")
-
-        # Add fake package manager binary
-        pkg_path = self.fakeroot / "usr" / "bin"
-        pkg_path.mkdir(parents=True, exist_ok=True)
-        pkg_bin = pkg_path / self.package_manager
-        pkg_bin.touch()
-        pkg_bin.write_text(f"# simulated {self.package_manager} binary\n")
-        self._log(f"bashshim: created {pkg_bin}")
-
     def _create_proc(self):
         """Create realistic /proc entries depending on OS flavor"""
         proc_dir = self.fakeroot / 'proc'
-        proc_dir.mkdir(exist_ok=True)
+        self.fs.mkdir(proc_dir, exist_ok=True)
         self._log(f"bashshim: creating /proc entries for {self.sim_os}")
 
         base_procs = {
@@ -570,10 +500,8 @@ class BashShim:
 
         for pid, cmd, user in procs:
             proc_path = proc_dir / str(pid)
-            proc_path.mkdir(parents=True, exist_ok=True)
-
-            # Create cmdline
-            (proc_path / 'cmdline').write_text(f"/usr/sbin/{cmd}")
+            self.fs.mkdir(proc_path, parents=True, exist_ok=True)
+            self.fs.write_text(proc_path / 'cmdline', f"/usr/sbin/{cmd}")
 
             # Create stat
             utime = random.randint(100, 300)
@@ -583,8 +511,7 @@ class BashShim:
             rss = random.randint(5000, 10000)
 
             stat_content = f"{pid} ({cmd}) S 1 1 1 0 -1 4194560 300 0 0 0 {utime} {stime} 0 0 20 0 1 0 {starttime} {vsz} {rss}"
-            (proc_path / 'stat').write_text(stat_content)
-
+            self.fs.write_text(proc_path / 'stat', stat_content)
             self._log(f"bashshim: created /proc/{pid} for {cmd} (user: {user})")
 
             # Save user for later
@@ -885,11 +812,11 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         try:
             target = self._to_real_path(args[0]) if args else self.cwd
             self._log(f"bashshim: ls {target}")
-            entries = os.listdir(target)
+            entries = self.fs.listdir(target)
             out = []
             for entry in entries:
                 path = target / entry
-                if path.is_dir():
+                if self.fs.is_dir(path):
                     out.append(f"{entry}/")
                 else:
                     out.append(entry)
@@ -904,7 +831,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
             real = self._to_real_path(path)
             self._log(f"bashshim: cat {real}")
             try:
-                out += Path(real).read_text()
+                out += self.fs.read_text(real)
             except FileNotFoundError:
                 self._log(f"bashshim: cat error: {path} not found")
                 
@@ -920,7 +847,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
             for path in args:
                 real = self._to_real_path(path)
                 self._log(f"bashshim: touch {real}")
-                Path(real).touch(exist_ok=True)
+                self.fs.touch(real, exist_ok=True)
             return 0, ''
         except Exception as e:
             self._log(f"bashshim: touch error: {e}")
@@ -1245,14 +1172,14 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         for path in files:
             real = self._to_real_path(path)
             try:
-                if real.is_dir():
+                if self.fs.is_dir(real):
                     if recursive:
-                        shutil.rmtree(real)
+                        self.fs.rmdir(real)
                     else:
                         out += f"rm: cannot remove '{path}': Is a directory\n"
                         code = 1
                 else:
-                    real.unlink()
+                    self.fs.remove(real)
             except FileNotFoundError:
                 if not force:
                     out += f"rm: cannot remove '{path}': No such file or directory\n"
@@ -1270,7 +1197,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         for path in args:
             real = self._to_real_path(path)
             try:
-                real.mkdir(parents=False, exist_ok=False)
+                self.fs.mkdir(real, parents=False, exist_ok=False)
             except FileExistsError:
                 out += f"mkdir: cannot create directory '{path}': File exists\n"
                 code = 1
@@ -1286,7 +1213,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         for path in args:
             real = self._to_real_path(path)
             try:
-                real.rmdir()
+                self.fs.rmdir(real)
             except Exception as e:
                 out += f"rmdir: failed to remove '{path}': {e}\n"
                 code = 1
@@ -1364,7 +1291,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         for path in files:
             real = self._to_real_path(path)
             try:
-                content = Path(real).read_text().splitlines()
+                content = self.fs.read_text(real).splitlines()
                 out += '\n'.join(content[:lines]) + '\n'
             except Exception as e:
                 out += f"head: cannot open '{path}' for reading: {e}\n"
@@ -1388,7 +1315,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         for path in files:
             real = self._to_real_path(path)
             try:
-                content = Path(real).read_text().splitlines()
+                content = self.fs.read_text(real).splitlines()
                 out += '\n'.join(content[-lines:]) + '\n'
             except Exception as e:
                 out += f"tail: cannot open '{path}' for reading: {e}\n"
@@ -1402,9 +1329,9 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         for path in args:
             real = self._to_real_path(path)
             try:
-                st = real.stat()
+                st = self.fs.stat(real)
                 out += (f"  File: {path}\n"
-                        f"  Size: {st.st_size}\tBlocks: {getattr(st, 'st_blocks', 0)}\tIO Block: {getattr(st, 'st_blksize', 4096)} {'directory' if real.is_dir() else 'regular file'}\n"
+                        f"  Size: {st.st_size}\tBlocks: {getattr(st, 'st_blocks', 0)}\tIO Block: {getattr(st, 'st_blksize', 4096)} {'directory' if self.fs.is_dir(real) else 'regular file'}\n"
                         f"Device: {getattr(st, 'st_dev', 0)}\tInode: {st.st_ino}\tLinks: {st.st_nlink}\n"
                         f"Access: ({oct(st.st_mode)[-4:]})  Uid: ({st.st_uid})   Gid: ({st.st_gid})\n"
                         f"Access: {datetime.fromtimestamp(st.st_atime)}\n"
@@ -1677,7 +1604,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         if self.fallback == 'panic':
             self._log(f"bashshim: fallback_exec: faking kernel panic")
             time.sleep(10)  # Simulate a hang
-            panic = """[  401.742398] BUG: unable to handle kernel NULL pointer dereference at 0000000000000010
+            panic = """[ 401.742398] BUG: unable to handle kernel NULL pointer dereference at 0000000000000010
 [  401.742415] IP: __copy_to_user+0x3a/0x60
 [  401.742419] PGD 0 P4D 0 
 [  401.742423] Oops: 0000 [#1] SMP PTI
@@ -1736,6 +1663,79 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         show_path = False
         show_path_capital = False
         force_func = False
+        help_flag = False
+        names = []
+        invalid_flag = None
+
+        for arg in args:
+            if arg == "-a":
+                show_all = True
+            elif arg == "-t":
+                show_type = True
+            elif arg == "-p":
+                show_path = True
+            elif arg == "-P":
+                show_path_capital = True
+            elif arg == "-f":
+                force_func = True
+            elif arg in ("-h", "--help"):
+                help_flag = True
+            elif arg.startswith("-"):
+                invalid_flag = arg
+                break
+            else:
+                names.append(arg)
+
+        if help_flag:
+            out = (
+                "type: type [-afptP] name [name ...]\n"
+                "    Display information about command type.\n"
+                "    -a    display all locations containing an executable named 'name'\n"
+                "    -f    suppress shell function lookup\n"
+                "    -P    force a PATH search for each name, even if it is an alias, builtin, or function\n"
+                "    -p    return the name of the disk file that would be executed\n"
+                "    -t    print a string which is one of 'alias', 'keyword', 'function', 'builtin', 'file' or 'not found'\n"
+                "    -h    display this help and exit\n"
+            )
+            return 0, out
+
+        if invalid_flag:
+            out = f"type: invalid option -- '{invalid_flag.lstrip('-')}'\nTry 'type --help' for more information.\n"
+            self._log(f"bashshim: type error -> {out.strip()}")
+            return 1, out
+
+        if not names:
+            return 1, "type: not enough arguments\n"
+
+        out = ""
+        code = 0
+        for name in names:
+            # Simulate builtins (hardcoded for now)
+            builtins = {
+                "cd", "echo", "pwd", "exit", "type", "true", "false", "read", "test", "alias", "unalias", "set", "unset", "export", "help"
+            }
+            if name in builtins:
+                if show_type:
+                    out += "builtin\n"
+                else:
+                    out += f"{name} is a shell builtin\n"
+                continue
+            # Simulated commands
+            if name in self.simulated:
+                if show_type:
+                    out += "file\n"
+                elif show_path or show_path_capital:
+                    out += f"{self.fakeroot / 'bin' / name}\n"
+                else:
+                    out += f"{name} is {self.fakeroot / 'bin' / name}\n"
+                continue
+            # Not found
+            if show_type:
+                out += "not found\n"
+            else:
+                out += f"type: {name} not found\n"
+                code = 1
+        return code, out
         help_flag = False
         names = []
         invalid_flag = None
