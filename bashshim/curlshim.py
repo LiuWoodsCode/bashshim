@@ -45,8 +45,11 @@ def run(shell, args):
         shell._log(f"curlshim: override file load failed: {e}")
         overrides = {}
 
-    host_rules = overrides.get(host)
-    if host_rules:
+    # NOTE: Need to distinguish between host missing vs empty override dict.
+    # An empty dict still means we are intentionally overriding that host and should
+    # return a synthetic 404 instead of a networking error.
+    if host in overrides:
+        host_rules = overrides.get(host) or {}
         shell._log(f"curlshim: found override rules for {host}")
 
         # Handle auto-redirect from http to https
