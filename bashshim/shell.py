@@ -16,7 +16,16 @@ except Exception:  # pragma: no cover - optional dependency may not be present
 from urllib.parse import urlparse
 import bashshim.turnstile_test as turnstile_test
 from bashshim.filesystem import FileSystem
+from .command_parser import CommandParser
 
+try:
+    from bashshim import __version__ as bashshim_version
+except ImportError:
+    try:
+        from importlib.metadata import version
+        bashshim_version = version('bashshim')
+    except Exception:
+        bashshim_version = "unknown"
 class BashShim:
     def __init__(self, fallback='error', os_flavor="Linux", kernel_version="5.15.0-fake", username="aurahack", uid=1337, distro_name="FakeOS", distro_codename="marie", distro_id="fakeos", distro_version="1.0", package_manager="apt", package_manager_mirror="http://package.fakeos.org", log_dmesg=True, allow_networking=True):
         self.distro_name = distro_name
@@ -40,12 +49,15 @@ class BashShim:
         self.fakeroot = self.home / 'fakeroot'
         self.fs = FileSystem(self.fakeroot)
         self.cwd = self.fakeroot
+        
 
         # Shell variable support
+        self._log(f"BashShim version {bashshim_version}")
+        self._log(f"bashshim: session started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         self.variables = {}
         self._init_shell_vars()
-
         self._log(f"bashshim: initializing BashShim for user '{username}' on simulated OS '{self.sim_os}' (host: {self.hostname})")
+        self._log(f"bashshim: initialized shell variables for user '{self.username}'")
         self.simulated = {
             'echo': self.cmd_echo,
             'pwd': self.cmd_pwd,
@@ -82,6 +94,8 @@ class BashShim:
             'type': self.cmd_type,  # <-- Add type command
             'bc': self.cmd_bc,      # <-- Add bc command
         }
+        # Parser helper (shares variables dict reference)
+        self.parser = CommandParser(self.variables)
         
         self._init_fakeroot()
         self._create_proc()
@@ -542,20 +556,14 @@ class BashShim:
         }
 
     def _expand_vars(self, s):
-        import re
-        def repl(m):
-            var = m.group(1) or m.group(2)
-            return self.variables.get(var, os.environ.get(var, ''))
-        # $VAR or ${VAR}
-        return re.sub(r'\$(\w+)|\$\{([^}]+)\}', repl, s)
+        # Delegate to parser for backwards compatibility
+        return self.parser.expand_vars(s)
 
     def _expand_args(self, args):
-        return [self._expand_vars(arg) for arg in args]
+        return self.parser.expand_args(args)
 
     def run(self, command_line):
         self._log(f"bashshim: running command: {command_line}")
-
-        # Variable assignment support (e.g., FOO=bar)
         stripped = command_line.strip()
         if '=' in stripped and not stripped.startswith(('>', '<', '|')):
             parts = stripped.split()
@@ -566,137 +574,26 @@ class BashShim:
                     if var.isidentifier():
                         self.variables[var] = self._expand_vars(val)
                         assigned = True
-            # If only assignments, no command, return success
             if assigned and (len(parts) == 1 or all('=' in p for p in parts)):
                 return 0, ''
-            # Remove assignments from command_line for further processing
             command_line = ' '.join([p for p in parts if '=' not in p])
 
-        # Handle sudo prefix
         if command_line.startswith("sudo "):
             self.is_root = True
             self._log("bashshim: sudo detected, elevating privileges")
             command_line = command_line[5:].strip()
 
-        # Handle piping and redirection
-        def parse_redir(cmd):
-            # Returns (cmd, out_file, append)
-            import shlex
-            tokens = shlex.split(cmd)
-            tokens = self._expand_args(tokens)
-            if '>>' in tokens:
-                idx = tokens.index('>>')
-                return tokens[:idx], tokens[idx+1], True
-            elif '>' in tokens:
-                idx = tokens.index('>')
-                return tokens[:idx], tokens[idx+1], False
-            else:
-                return tokens, None, False
-
-        def run_pipe(cmds):
-            prev_out = ''
-            code = 0
-            for i, cmd in enumerate(cmds):
-                tokens, out_file, append = parse_redir(cmd)
-                if not tokens:
-                    continue
-                cmd_str = ' '.join(tokens)
-                # For all but the first, pass prev_out as stdin (simulate)
-                if i == 0:
-                    code, out = self.run(cmd_str)
-                else:
-                    # Simulate stdin by writing prev_out to a temp file and using it as input
-                    import tempfile
-                    with tempfile.NamedTemporaryFile('w+', delete=False) as tf:
-                        tf.write(prev_out)
-                        tf.flush()
-                        # Replace any occurrence of '-' with the temp file
-                        tokens = [tf.name if t == '-' else t for t in tokens]
-                        cmd_str2 = ' '.join(tokens)
-                        code, out = self.run(cmd_str2)
-                prev_out = out
-            # Handle redirection on the last command
-            if out_file:
-                mode = 'a' if append else 'w'
-                real_path = self._to_real_path(out_file)
-                with open(real_path, mode, encoding='utf-8') as f:
-                    f.write(prev_out)
-                return code, ''
-            return code, prev_out
-
-        # Handle pipes
+        # Pipes
         if '|' in command_line:
-            cmds = [c.strip() for c in command_line.split('|')]
-            return run_pipe(cmds)
+            cmds = self.parser.split_pipes(command_line)
+            return self._run_pipeline(cmds)
 
-        # Minimal shell splitting: handle ;, &&, ||
-        def split_shell(cmdline):
-            import shlex
-            tokens = []
-            buf = ''
-            i = 0
-            length = len(cmdline)
-            while i < length:
-                if cmdline[i:i+2] == '&&':
-                    if buf.strip():
-                        tokens.append(buf.strip())
-                    tokens.append('&&')
-                    buf = ''
-                    i += 2
-                elif cmdline[i:i+2] == '||':
-                    if buf.strip():
-                        tokens.append(buf.strip())
-                    tokens.append('||')
-                    buf = ''
-                    i += 2
-                elif cmdline[i] == ';':
-                    if buf.strip():
-                        tokens.append(buf.strip())
-                    tokens.append(';')
-                    buf = ''
-                    i += 1
-                else:
-                    buf += cmdline[i]
-                    i += 1
-            if buf.strip():
-                tokens.append(buf.strip())
-            return tokens
+        # Shell operators
+        if not self.parser.has_shell_operators(command_line):
+            return self._run_with_redirection(command_line)
 
-        # If no shell operators, run as before
-        if not any(op in command_line for op in [';', '&&', '||']):
-            # Handle output redirection
-            import shlex
-            tokens, out_file, append = parse_redir(command_line)
-            if not tokens:
-                self._log("bashshim: empty command line")
-                return 0, ''
-            cmd = tokens[0]
-            args = tokens[1:]
-            # Expand variables in args
-            args = self._expand_args(args)
-            if cmd in self.simulated:
-                try:
-                    code, out = self.simulated[cmd](args)
-                    self.variables['?'] = str(code)
-                    self._log(f"bashshim: simulated '{cmd}' exit {code}")
-                except Exception as e:
-                    self.variables['?'] = '1'
-                    self._log(f"bashshim: error simulating '{cmd}': {e}")
-                    return 1, f"bashshim: error simulating '{cmd}': {e}"
-            else:
-                self._log(f"bashshim: '{cmd}' not simulated, using fallback")
-                code, out = self.fallback_exec(' '.join(tokens))
-                self.variables['?'] = str(code)
-            if out_file:
-                mode = 'a' if append else 'w'
-                real_path = self._to_real_path(out_file)
-                with open(real_path, mode, encoding='utf-8') as f:
-                    f.write(out)
-                return code, ''
-            return code, out
-
-        # Shell operator logic
-        parts = split_shell(command_line)
+        # Compound execution
+        parts = self.parser.split_shell_operators(command_line)
         last_code = 0
         output = ''
         i = 0
@@ -705,8 +602,7 @@ class BashShim:
             if part in (';', '&&', '||'):
                 i += 1
                 continue
-            cmdline = part
-            code, out = self.run(cmdline) if any(op in cmdline for op in [';', '&&', '||']) else self._run_single(cmdline)
+            code, out = (self.run(part) if self.parser.has_shell_operators(part) else self._run_with_redirection(part))
             output += out
             last_code = code
             # Look ahead for operator
@@ -715,45 +611,77 @@ class BashShim:
                 if op == ';':
                     i += 2
                     continue
-                elif op == '&&':
+                if op == '&&':
                     if last_code == 0:
                         i += 2
                         continue
-                    else:
-                        break
-                elif op == '||':
+                    break
+                if op == '||':
                     if last_code != 0:
                         i += 2
                         continue
-                    else:
-                        break
+                    break
             i += 1
         return last_code, output
 
-    def _run_single(self, command_line):
-        tokens = command_line.strip().split()
+    def _run_with_redirection(self, command_line: str):
+        import os as _os
+        tokens, out_file, append = self.parser.parse_redirection(command_line)
         if not tokens:
             self._log("bashshim: empty command line")
             return 0, ''
         cmd = tokens[0]
         args = tokens[1:]
-        # Expand variables in args
         args = self._expand_args(args)
         if cmd in self.simulated:
             try:
                 code, out = self.simulated[cmd](args)
                 self.variables['?'] = str(code)
                 self._log(f"bashshim: simulated '{cmd}' exit {code}")
-                return code, out
             except Exception as e:
                 self.variables['?'] = '1'
                 self._log(f"bashshim: error simulating '{cmd}': {e}")
                 return 1, f"bashshim: error simulating '{cmd}': {e}"
         else:
             self._log(f"bashshim: '{cmd}' not simulated, using fallback")
-            code, out = self.fallback_exec(command_line)
+            code, out = self.fallback_exec(' '.join(tokens))
             self.variables['?'] = str(code)
-            return code, out
+        if out_file:
+            mode = 'a' if append else 'w'
+            real_path = self._to_real_path(out_file)
+            with open(real_path, mode, encoding='utf-8') as f:
+                f.write(out)
+            return code, ''
+        return code, out
+
+    def _run_pipeline(self, cmds):
+        prev_out = ''
+        code = 0
+        for i, cmd in enumerate(cmds):
+            tokens, out_file, append = self.parser.parse_redirection(cmd)
+            if not tokens:
+                continue
+            if i == 0:
+                code, out = self._run_with_redirection(' '.join(tokens))
+            else:
+                import tempfile
+                with tempfile.NamedTemporaryFile('w+', delete=False) as tf:
+                    tf.write(prev_out)
+                    tf.flush()
+                    replaced = [tf.name if t == '-' else t for t in tokens]
+                    code, out = self._run_with_redirection(' '.join(replaced))
+            prev_out = out
+        if out_file:
+            mode = 'a' if append else 'w'
+            real_path = self._to_real_path(out_file)
+            with open(real_path, mode, encoding='utf-8') as f:
+                f.write(prev_out)
+            return code, ''
+        return code, prev_out
+
+    # Preserve legacy single-run API
+    def _run_single(self, command_line):
+        return self._run_with_redirection(command_line)
 
     def cmd_pkg_manager(self, args):
         self._log(f"bashshim: {self.package_manager} called with args: {args}")
@@ -1735,7 +1663,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
             else:
                 out += f"type: {name} not found\n"
                 code = 1
-        return code, out
+                return code, out
         help_flag = False
         names = []
         invalid_flag = None
