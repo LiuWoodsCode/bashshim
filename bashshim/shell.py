@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import bashshim.turnstile_test as turnstile_test
 from bashshim.filesystem import FileSystem
 from .command_parser import CommandParser
+from . import curlshim  # new import
 
 try:
     from bashshim import __version__ as bashshim_version
@@ -89,7 +90,7 @@ class BashShim:
             'passwd': self.cmd_passwd,
             'dmesg': self.cmd_dmesg,
             'free': self.cmd_free,
-            'curl': self.cmd_curl,
+            'curl': lambda args: curlshim.run(self, args),  # decoupled curl
             'rebuildfs': self.cmd_rebuildfs,
             'type': self.cmd_type,  # <-- Add type command
             'bc': self.cmd_bc,      # <-- Add bc command
@@ -1381,6 +1382,7 @@ W: Problem unlinking the file /var/cache/apt/srcpkgcache.bin - RemoveCaches (13:
         except:
             return False
 
+    # TODO: Remove old curl implementation below
     def cmd_curl(self, args):
         if not args:
             return 1, "curl: no URL specified\n"
